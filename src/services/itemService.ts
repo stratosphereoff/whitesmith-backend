@@ -70,25 +70,23 @@ export function getAvailableBases(): ItemBase[] {
   return ITEM_BASES;
 }
 
-export function rollMod(stat: StatType, ilvl: number): GeneratedMod {
+export function rollMod(stat: StatType, ilvl: number, forcePrefix?: boolean): ItemMod {
   const options = MOD_POOL[stat];
-  
-  // ✅ Handle undefined stats gracefully
   if (!options || options.length === 0) {
-    console.warn(`No mod definitions found for stat: ${stat}`);
-    return null;
+    throw new Error(`No mod definitions for stat: ${stat}`);
   }
   
-  // Filter by ilvl if needed (enhancement)
-  const availableMods = options.filter(mod => !mod.minIlvl || ilvl >= mod.minIlvl);
-  if (availableMods.length === 0) return null;
+  const availableMods = options.filter(m => !m.minIlvl || ilvl >= m.minIlvl);
+  if (availableMods.length === 0) {
+    throw new Error(`No valid mods for ${stat} at ilvl ${ilvl}`);
+  }
   
-  // Weighted random selection (simplified - could add spawn weights)
   const modDef = availableMods[Math.floor(Math.random() * availableMods.length)];
   const tier = modDef.tiers[Math.floor(Math.random() * modDef.tiers.length)];
-  
-  // Roll value within tier range
   const rolledValue = Math.floor(Math.random() * (tier.max - tier.min + 1)) + tier.min;
+  
+  // Deterministic prefix/suffix assignment
+  const isPrefix = forcePrefix !== undefined ? forcePrefix : Math.random() > 0.5;
   
   return {
     id: randomUUID().slice(0, 8),
@@ -96,70 +94,68 @@ export function rollMod(stat: StatType, ilvl: number): GeneratedMod {
     stat,
     value: rolledValue,
     tier: tier.tier,
-    isPrefix: Math.random() > 0.5 // Simplified - in real game, mod name determines prefix/suffix
+    isPrefix,
+    isImplicit: false
   };
 }
 
-export function craftItem(request: { baseId: string; craftType: string }): CraftedItem | null {
+export function craftItem(request: { 
+  baseId: string; 
+  craftType: string; 
+  currentItem?: CraftedItem 
+}): { item: CraftedItem; success: true } | { success: false; reason: string } {
   const base = ITEM_BASES.find(b => b.id === request.baseId);
-  if (!base) return null;
+  if (!base) return { success: false, reason: 'Invalid item base' };
 
-  const mods: ItemMod[] = [];
-  
-  // Copy implicit mods (they're fixed)
-  if (base.implicitMods) {
-    mods.push(...base.implicitMods.map(m => ({ 
-      ...m, 
-      id: randomUUID().slice(0, 8) 
-    })));
+  const isAugmenting = request.craftType === 'add_mod' && !!request.currentItem;
+  let currentMods: ItemMod[] = isAugmenting ? [...request.currentItem!.mods] : [];
+
+  if (!isAugmenting && base.implicitMods) {
+    currentMods.push(...base.implicitMods.map(m => ({ ...m, isImplicit: true })));
   }
 
-  // Determine how many mods to roll based on craft type
-  const numRolls = request.craftType === 'roll_new' 
-    ? Math.floor(Math.random() * 3) + 1  // 1-3 mods
-    : 1;
-    
-  // Available stats to roll (expand this pool for production)
+  // Count ONLY explicit affixes
+  const explicitMods = currentMods.filter(m => !m.isImplicit);
+  const prefixCount = explicitMods.filter(m => m.isPrefix).length;
+  const suffixCount = explicitMods.filter(m => !m.isPrefix).length;
+
+  const canAddPrefix = prefixCount < base.maxPrefixes;
+  const canAddSuffix = suffixCount < base.maxSuffixes;
+
+  if (!canAddPrefix && !canAddSuffix) {
+    return { success: false, reason: 'Prefix and suffix limits reached' };
+  }
+
+  // SMART ROUTING: Determine which slot types are actually available
+  let forcePrefix: boolean | undefined = undefined;
+  if (canAddPrefix && !canAddSuffix) forcePrefix = true;  // Only prefixes available
+  else if (!canAddPrefix && canAddSuffix) forcePrefix = false; // Only suffixes available
+
+  // Roll with constraint applied
   const availableStats: StatType[] = ['life', 'strength', 'dexterity', 'physicalDamage', 'armor'];
+  const randomStat = availableStats[Math.floor(Math.random() * availableStats.length)];
   
-  for (let i = 0; i < numRolls; i++) {
-    // Check if we've hit mod limits
-    const prefixCount = mods.filter(m => m.isPrefix).length;
-    const suffixCount = mods.filter(m => !m.isPrefix).length;
-    
-    if (prefixCount >= base.maxPrefixes && suffixCount >= base.maxSuffixes) {
-      break; // Item is full
-    }
-    
-    // Pick random stat and try to roll a mod
-    const randomStat = availableStats[Math.floor(Math.random() * availableStats.length)];
-    const newMod = rollMod(randomStat, base.ilvl);
-    
-    if (newMod) {
-      // Simple prefix/suffix assignment logic
-      const wouldBePrefix = newMod.isPrefix;
-      
-      if ((wouldBePrefix && prefixCount < base.maxPrefixes) || 
-          (!wouldBePrefix && suffixCount < base.maxSuffixes)) {
-        mods.push(newMod);
+  try {
+    const newMod = rollMod(randomStat, base.ilvl, forcePrefix);
+    currentMods.push(newMod);
+
+    const finalExplicitCount = explicitMods.length + 1;
+    const rarity: CraftedItem['rarity'] =
+      finalExplicitCount >= 4 ? 'rare' : finalExplicitCount >= 1 ? 'magic' : 'normal';
+
+    return {
+      success: true,
+      item: {
+        id: isAugmenting ? request.currentItem!.id : randomUUID(),
+        base,
+        mods: currentMods,
+        createdAt: isAugmenting ? request.currentItem!.createdAt : Date.now(),
+        rarity
       }
-    }
+    };
+  } catch (err) {
+    return { success: false, reason: (err as Error).message };
   }
-
-  // Determine rarity based on mod count (simplified)
-  const explicitModCount = mods.length - (base.implicitMods?.length || 0);
-  const rarity: CraftedItem['rarity'] = 
-    explicitModCount >= 4 ? 'rare' : 
-    explicitModCount >= 1 ? 'magic' : 
-    'normal';
-
-  return {
-    id: randomUUID(),
-    base,
-    mods,
-    createdAt: Date.now(),
-    rarity
-  };
 }
 
 // Helper to get all possible mods for UI preview

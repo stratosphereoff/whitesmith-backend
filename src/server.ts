@@ -49,22 +49,23 @@ io.on('connection', (socket) => {
 
   socket.on('craft:request', async (data: CraftRequest, callback: (result: CraftResult) => void) => {
     try {
-      const result = craftItem({ 
+      const craftResult = craftItem({ 
         baseId: data.baseId, 
-        craftType: data.craftType 
+        craftType: data.craftType,
+        currentItem: data.currentItem 
       });
       
-      const response: CraftResult = result ? {
-        success: true,
-        item: result,
-        message: 'Crafting successful!'
-      } : {
-        success: false,
-        message: 'Crafting failed: invalid base or parameters'
-      };
-      
-      callback(response);
-      socket.emit('craft:result', response);
+      if (craftResult.success) {
+        const response: CraftResult = {
+          success: true,
+          item: craftResult.item,
+          message: data.craftType === 'add_mod' ? 'Mod added successfully!' : 'Item rolled!'
+        };
+        callback(response);
+        socket.emit('craft:result', response);
+      } else {
+        callback({ success: false, message: craftResult.reason });
+      }
     } catch (err) {
       console.error('Craft error:', err);
       callback({ success: false, message: 'Server error during crafting' });

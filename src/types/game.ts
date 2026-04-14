@@ -18,6 +18,7 @@ export interface ItemMod {
   value: number;
   tier?: number;
   isPrefix: boolean;
+  isImplicit: boolean;
   hidden?: boolean;
 }
 
@@ -52,6 +53,7 @@ export interface CraftRequest {
   baseId: string;
   craftType: 'roll_new' | 'add_mod' | 'reforge' | 'augment';
   currency?: string;
+  currentItem?: CraftedItem;
 }
 
 export interface CraftResult {
